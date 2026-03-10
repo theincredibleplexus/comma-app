@@ -383,8 +383,8 @@ export function processCommSec(rows) {
 
   const sample = rows[0];
   const codeCol  = findCol(sample, ['security code', 'code', 'ticker']);
-  const valueCol = findCol(sample, ['market value', 'value', 'market val', 'value (aud)', 'current value']);
-  const plCol    = findCol(sample, ['open p/l ($)', 'unrealised p/l', 'p/l ($)', 'gain/loss', 'gain/loss (aud)', 'unrealised p/l (aud)', 'profit/loss']);
+  const valueCol = findCol(sample, ['mkt value $', 'market value', 'mkt value', 'value', 'market val', 'value (aud)', 'current value']);
+  const plCol    = findCol(sample, ['profit/loss $', 'open p/l ($)', 'unrealised p/l', 'p/l ($)', 'gain/loss', 'gain/loss (aud)', 'unrealised p/l (aud)', 'profit/loss']);
 
   if (!codeCol || !valueCol) return null;
 
