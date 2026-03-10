@@ -83,15 +83,166 @@ function getSortedMonths(dates) {
 }
 
 // ─── UP BANK ─────────────────────────────────────────────────────────────────
+
+// ─── UNIVERSAL CATEGORISATION ENGINE ─────────────────────────────────────────
+// Maps transaction description patterns → spending categories.
+// Used by all bank CSV parsers (Up Bank, CBA, NAB, Westpac, ANZ, etc.).
+// UPBANK_CATEGORY_MAP takes priority when present; this map is the fallback
+// for banks that don't include a category column in their CSV exports.
+// ORDER MATTERS: the loop breaks on the first match, so more specific patterns
+// must appear before broader ones (e.g. grocery_delivery before grocery,
+// delivery before transport, health before insurance).
 const MERCHANT_MAP = {
-  amazon:   [/amazon/i, /amzn/i],
-  paypal:   [/paypal/i],
-  toll:     [/citylink/i, /eastlink/i, /linkt/i, /mylinkt/i, /e-toll/i],
-  fuel:     [/bp\s/i, /shell/i, /7-eleven/i, /puma/i, /coles express/i],
-  mortgage: [/gateway bank/i, /mortgage/i],
-  rent:     [/ray white/i, /real estate/i],
-  coffee:   [/coffee/i, /barista/i, /starbucks/i, /gloria jean/i, /mecca.*espresso/i],
+  // ── Subscriptions & digital services ──────────────────────────────────────
+  // Must come before amazon/paypal so "Amazon Prime" → sub, not amazon
+  sub: [
+    /netflix/i, /spotify/i, /\bstan\b/i, /disney\+/i, /disney plus/i,
+    /youtube premium/i, /\bkayo\b/i, /\bbinge\b/i, /foxtel/i,
+    /paramount\+/i, /paramount plus/i, /amazon prime/i,
+    /\badobe\b/i, /\bcanva\b/i, /chatgpt/i, /openai/i,
+    /\bclaude\b/i, /anthropic/i, /microsoft 365/i, /\bdropbox\b/i,
+    /\bicloud\b/i, /grammarly/i, /\baudible\b/i, /\bkindle\b/i,
+    /\bpatreon\b/i, /\bgithub\b/i, /\bnotion\b/i, /crunchyroll/i, /\bdazn\b/i,
+    /apple\.com/i, /app store/i, /apple music/i, /apple one/i, /apple tv/i,
+    /google one/i, /google workspace/i, /google storage/i,
+  ],
+
+  // ── Legacy merchant trackers (kept for existing chart aggregations) ────────
+  amazon: [/amazon/i, /amzn/i],
+  paypal: [/paypal/i],
+
+  // ── Grocery delivery (before grocery — "Woolworths Online" → grocery_delivery) ──
+  grocery_delivery: [
+    /woolworths online/i, /coles online/i, /amazon fresh/i,
+    /\bmilkrun\b/i, /\bvoly\b/i,
+  ],
+
+  // ── Groceries ─────────────────────────────────────────────────────────────
+  grocery: [
+    /\bwoolworths\b/i, /\bwoolies\b/i, /\bcoles\b/i, /\baldi\b/i,
+    /\biga\b/i, /harris farm/i, /\bcostco\b/i, /foodworks/i,
+    /spudshed/i, /\bdrakes\b/i, /ritchies/i, /farmer jacks/i,
+    /fresh provisions/i,
+  ],
+
+  // ── Food & drink ──────────────────────────────────────────────────────────
+  restaurant: [
+    /restaurant/i, /\bcafe\b/i, /dining/i, /bistro/i, /\bpizza\b/i,
+    /\bsushi\b/i, /\bthai\b/i, /\bindian\b/i, /\bchinese\b/i,
+    /\bgrill\b/i, /\bkitchen\b/i, /bar & grill/i, /bar and grill/i,
+    /\bburger\b/i,
+  ],
+  takeaway: [
+    /mcdonald/i, /maccas/i, /\bkfc\b/i, /hungry jack/i, /\bsubway\b/i,
+    /guzman/i, /nando/i, /dominos/i, /domino's/i, /\bgrill'd\b/i,
+    /oporto/i, /red rooster/i, /zambrero/i, /roll'd/i,
+    /betty's burger/i, /schnitz/i,
+  ],
+  coffee: [
+    /coffee/i, /barista/i, /starbucks/i, /gloria jean/i, /mecca.*espresso/i,
+    /patricia.*coffee/i, /market lane/i, /\baxil\b/i, /st ali/i,
+    /industry beans/i, /\bcampos\b/i, /single o/i,
+  ],
+
+  // ── Delivery apps (before transport — "Uber Eats" → delivery, not transport) ──
   delivery: [/doordash/i, /uber eats/i, /menulog/i, /deliveroo/i],
+
+  // ── Transport ─────────────────────────────────────────────────────────────
+  transport: [
+    /\bmyki\b/i, /\bopal\b/i, /\bgo card\b/i, /translink/i,
+    /\buber\b/i, /\bdidi\b/i, /\bola\b/i, /\btaxi\b/i,
+    /\b13cabs\b/i, /ingogo/i, /\blime\b/i, /\bbeam\b/i, /neuron/i,
+  ],
+
+  // ── Vehicle ───────────────────────────────────────────────────────────────
+  fuel: [
+    /\bbp\b/i, /shell/i, /7-eleven/i, /puma/i, /coles express/i,
+    /ampol/i, /united petrol/i, /costco fuel/i, /liberty petrol/i,
+    /metro petroleum/i, /speedway/i, /\bvibe\b/i,
+  ],
+  toll: [
+    /citylink/i, /eastlink/i, /\blinkt\b/i, /mylinkt/i, /e-toll/i,
+    /\be-tag\b/i, /\broam\b/i, /\bm5\b/i, /\bm7\b/i, /westconnex/i,
+    /go via/i,
+  ],
+
+  // ── Home bills ────────────────────────────────────────────────────────────
+  utilities: [
+    /\bagl\b/i, /origin energy/i, /energy australia/i, /alinta/i,
+    /red energy/i, /lumo energy/i, /simply energy/i, /powershop/i,
+    /momentum energy/i, /globibird/i, /yarra valley water/i,
+    /sydney water/i, /\bsa water\b/i, /city west water/i,
+    /south east water/i, /council rates/i,
+  ],
+  telco: [
+    /telstra/i, /\boptus\b/i, /vodafone/i, /aussie broadband/i,
+    /\btpg\b/i, /\biinet\b/i, /tangerine telecom/i, /\bbelong\b/i,
+    /spintel/i, /\bdodo\b/i, /exetel/i, /superloop/i,
+    /buddy telco/i, /mate communicate/i, /amaysim/i,
+  ],
+
+  // ── Health (before insurance — "Bupa Dental" → health, not insurance) ─────
+  health: [
+    /chemist warehouse/i, /priceline pharmacy/i, /terrywhite/i,
+    /terry white/i, /\bblooms\b/i, /ramsay health/i, /healthscope/i,
+    /bupa dental/i, /hcf dental/i, /pacific smiles/i,
+  ],
+  insurance: [
+    /\baami\b/i, /allianz/i, /\bbupa\b/i, /medibank/i, /\bhcf\b/i,
+    /\bnib\b/i, /\bahm\b/i, /\bracv\b/i, /\bnrma\b/i, /suncorp/i,
+    /\bcgu\b/i, /\bqbe\b/i, /\bgio\b/i, /budget direct/i,
+    /\byoui\b/i, /real insurance/i, /\btid\b/i, /woolworths insurance/i,
+  ],
+
+  // ── Lifestyle ─────────────────────────────────────────────────────────────
+  fitness: [
+    /fitness first/i, /anytime fitness/i, /\bf45\b/i, /\bjetts\b/i,
+    /goodlife/i, /virgin active/i, /barry's/i, /plus fitness/i,
+    /snap fitness/i, /\bgym\b/i, /crossfit/i, /\byoga\b/i,
+    /pilates/i, /\brouvy\b/i, /\bzwift\b/i, /\bstrava\b/i,
+  ],
+  education: [
+    /university/i, /\btafe\b/i, /coursera/i, /udemy/i,
+    /skillshare/i, /linkedin learning/i, /textbook/i,
+  ],
+  clothing: [
+    /uniqlo/i, /\bzara\b/i, /\bh&m\b/i, /cotton on/i, /country road/i,
+    /\bmyer\b/i, /david jones/i, /the iconic/i, /\basos\b/i,
+  ],
+  home: [
+    /bunnings/i, /\bikea\b/i, /\bkmart\b/i, /\btarget\b/i,
+    /officeworks/i, /harvey norman/i, /jb hi-fi/i, /jb hifi/i,
+    /the good guys/i, /fantastic furniture/i, /\bfreedom\b/i,
+    /temple & webster/i, /\badairs\b/i,
+  ],
+  pets: [
+    /petstock/i, /petbarn/i, /city farmers/i, /greencross/i, /\bvet\b/i,
+  ],
+  travel: [
+    /airbnb/i, /booking\.com/i, /expedia/i, /\bhotel/i,
+    /\bqantas\b/i, /virgin australia/i, /jetstar/i, /rex airlines/i,
+    /skyscanner/i, /\bflight\b/i,
+  ],
+  gambling: [
+    /\btab\b/i, /sportsbet/i, /ladbrokes/i, /bet365/i,
+    /pointsbet/i, /\bneds\b/i, /unibet/i, /\bcrown\b/i,
+    /star casino/i, /\bpokies\b/i,
+  ],
+
+  // ── Government ────────────────────────────────────────────────────────────
+  government: [
+    /\bato\b/i, /service nsw/i, /vicroads/i, /\bmygov\b/i,
+    /\bmedicare\b/i, /centrelink/i, /\bcouncil\b/i,
+  ],
+
+  // ── Housing ───────────────────────────────────────────────────────────────
+  mortgage: [/gateway bank/i, /mortgage/i, /home loan/i, /\boffset\b/i, /\bredraw\b/i],
+  rent:     [/ray white/i, /real estate/i, /\bproperty\b/i, /tenancy/i, /\blease\b/i, /\brea\b/i, /\bdomain\b/i],
+
+  // ── Financial flows ───────────────────────────────────────────────────────
+  // transfer: flag so users can choose to exclude from spending totals
+  transfer: [/\btransfer\b/i, /\bbpay\b/i, /pay anyone/i, /\binternal\b/i, /\bsweep\b/i],
+  income:   [/salary/i, /\bwages\b/i, /\bpay\b/i, /\bxero\b/i, /employment hero/i, /keypay/i, /dividend/i, /\binterest\b/i, /\brefund\b/i, /cashback/i, /\brebate\b/i],
 };
 
 const UPBANK_CATEGORY_MAP = {
