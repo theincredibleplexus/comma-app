@@ -381,16 +381,37 @@ const NEG_COLORS = ['#f87171', '#ef4444', '#fb923c'];
 export function processCommSec(rows) {
   if (!rows || rows.length === 0) return null;
 
-  const sample = rows[0];
+  // CommSec CSVs have a title row before the real headers — detect and skip it
+  let workRows = rows;
+  if (!findCol(rows[0], ['security code', 'code', 'ticker'])) {
+    for (let i = 0; i < Math.min(4, rows.length); i++) {
+      const vals = Object.values(rows[i]);
+      if (vals.some(v => /^code$/i.test((v || '').trim()))) {
+        const realHeaders = vals.map(v => (v || '').trim());
+        workRows = rows.slice(i + 1).map(r => {
+          const values = Object.values(r);
+          const row = {};
+          realHeaders.forEach((h, idx) => { if (h) row[h] = (values[idx] || '').trim(); });
+          return row;
+        });
+        break;
+      }
+    }
+  }
+
+  const sample = workRows[0];
+  if (!sample) return null;
+
   const codeCol  = findCol(sample, ['security code', 'code', 'ticker']);
   const valueCol = findCol(sample, ['mkt value $', 'market value', 'mkt value', 'value', 'market val', 'value (aud)', 'current value']);
   const plCol    = findCol(sample, ['profit/loss $', 'open p/l ($)', 'unrealised p/l', 'p/l ($)', 'gain/loss', 'gain/loss (aud)', 'unrealised p/l (aud)', 'profit/loss']);
 
   if (!codeCol || !valueCol) return null;
 
-  const holdings = rows.map(r => {
+  const SKIP_CODES = new Set(['total', 'chess', 'issuer sponsored', 'grand total', '']);
+  const holdings = workRows.map(r => {
     const code = (r[codeCol] || '').trim();
-    if (!code || code.toLowerCase() === 'total') return null;
+    if (SKIP_CODES.has(code.toLowerCase())) return null;
     const value = parseAmount(r[valueCol]);
     if (value <= 0) return null;
     const pl = plCol ? parseAmount(r[plCol]) : 0;
@@ -410,5 +431,5 @@ export function processCommSec(rows) {
     color: h.pl >= 0 ? (POS_COLORS[posIdx++] || '#34d399') : (NEG_COLORS[negIdx++] || '#f87171'),
   }));
 
-  return { shares, rowCount: rows.length };
+  return { shares, rowCount: shares.length };
 }

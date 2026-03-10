@@ -150,6 +150,7 @@ function DashboardInner() {
   const [menuOpen,  setMenuOpen]  = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchCat,   setSearchCat]   = useState('all');
+  const [savedFlash,  setSavedFlash]  = useState(false);
 
   useEffect(() => {
     const h = () => setIsMobile(window.innerWidth < 768);
@@ -1055,10 +1056,10 @@ function DashboardInner() {
           );
         })}
         <button
-          onClick={() => { const cfg = { ...draftConfig }; localStorage.setItem('sheetConfig', JSON.stringify(cfg)); setSheetConfig(cfg); }}
-          style={{ width: '100%', padding: '11px 0', borderRadius: 10, border: 'none', cursor: 'pointer', background: 'rgba(96,165,250,0.15)', color: '#93c5fd', fontSize: 13, fontWeight: 700, fontFamily: 'inherit' }}
+          onClick={() => { const cfg = { ...draftConfig }; localStorage.setItem('sheetConfig', JSON.stringify(cfg)); setSheetConfig(cfg); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 2000); }}
+          style={{ width: '100%', padding: '11px 0', borderRadius: 10, border: 'none', cursor: 'pointer', background: savedFlash ? 'rgba(52,211,153,0.2)' : 'rgba(96,165,250,0.15)', color: savedFlash ? '#34d399' : '#93c5fd', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', transition: 'background 0.2s, color 0.2s' }}
         >
-          Save &amp; Reload
+          {savedFlash ? '✓ Saved!' : 'Save & Reload'}
         </button>
       </div>)}
 
