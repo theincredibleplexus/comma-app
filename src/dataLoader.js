@@ -236,7 +236,7 @@ const MERCHANT_MAP = {
   ],
 
   // ── Housing ───────────────────────────────────────────────────────────────
-  mortgage: [/gateway bank/i, /mortgage/i, /home loan/i, /\boffset\b/i, /\bredraw\b/i],
+  mortgage: [/mortgage/i, /home loan/i, /\boffset\b/i, /\bredraw\b/i],
   rent:     [/ray white/i, /real estate/i, /\bproperty\b/i, /tenancy/i, /\blease\b/i, /\brea\b/i, /\bdomain\b/i],
 
   // ── Financial flows ───────────────────────────────────────────────────────
@@ -263,10 +263,10 @@ const UPBANK_CATEGORY_MAP = {
 const HEALTH_SUBCATS = {
   Vision:          [/specsavers/i, /opsm/i, /vision/i, /optical/i],
   Pharmacy:        [/chemist warehouse/i, /pharmacy/i, /priceline/i],
-  'Mental Health': [/psychology/i, /psychiatr/i, /psychologist/i, /counsell/i, /langley/i],
+  'Mental Health': [/psychology/i, /psychiatr/i, /psychologist/i, /counsell/i],
   GP:              [/medical centre/i, /\bgp\b/i, /doctor/i, /clinic/i],
   Physio:          [/physio/i, /osteo/i, /chiro/i],
-  Surgery:         [/hospital/i, /surgeon/i, /surgical/i, /cabrini/i],
+  Surgery:         [/hospital/i, /surgeon/i, /surgical/i],
 };
 
 const HEALTH_COLORS = {
@@ -415,16 +415,16 @@ export function processUpBank(rows) {
 
 // ─── PAYPAL ──────────────────────────────────────────────────────────────────
 const PAYPAL_CATS = {
-  'Vehicle (Jeep)': [/jeep/i, /chrysler/i, /mopar/i, /autobarn/i, /repco/i, /supercheap/i],
+  'Vehicle':        [/autobarn/i, /repco/i, /supercheap/i],
   'Tech':           [/microsoft/i, /google/i, /steam/i, /adobe/i, /logitech/i, /corsair/i],
-  'Harley/Moto':    [/harley/i, /davidson/i, /peter steven/i, /mcas/i, /bikebiz/i],
+  'Motorcycle':     [/peter steven/i, /mcas/i, /bikebiz/i],
   'Fitness':        [/zwift/i, /strava/i, /garmin/i, /oura/i, /fitbit/i],
   'eBay':           [/ebay/i],
   'Events+Travel':  [/eventbrite/i, /airbnb/i, /booking\./i, /ticketek/i, /ticketmaster/i, /viator/i],
 };
 
 const PAYPAL_CAT_COLORS = {
-  'Vehicle (Jeep)': '#ef4444', 'Tech': '#6366f1', 'Harley/Moto': '#f97316',
+  'Vehicle': '#ef4444', 'Tech': '#6366f1', 'Motorcycle': '#f97316',
   'Fitness': '#22c55e', 'eBay': '#eab308', 'Events+Travel': '#ec4899', 'Other': '#94a3b8',
 };
 
