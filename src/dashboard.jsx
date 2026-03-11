@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ComposedChart, Line, ReferenceLine, AreaChart, Area, Cell, LineChart, ReferenceDot } from "recharts";
 import { processCSVText, parseCSV, processUniversalBank, applyUserRules, aggregateTxs, extractMerchantPattern } from "./dataLoader.js";
+import { streamChat, buildFinancialContext } from "./aiProvider.js";
 
 // ─── DEMO DATA ───────────────────────────────────────────────────────────────
 // Fictional persona: Alex & Jordan Chen, 14 Banksia Drive, Brunswick VIC 3056
@@ -559,7 +560,7 @@ const tabGroups=[
   {label:"Summary",  tabs:[{id:"overview",l:"📊 Overview"},{id:"planner",l:"🎛️ Planner"}]},
   {label:"Assets",   tabs:[{id:"networth",l:"💰 Net Worth"},{id:"property",l:"🏠 Property"}]},
   {label:"Spending", tabs:[{id:"committed",l:"📌 Committed"},{id:"health",l:"💊 Health"},{id:"variable",l:"🛒 Variable"},{id:"paypal",l:"💳 PayPal"},{id:"savings",l:"🏦 Savings"}]},
-  {label:"Insights", tabs:[{id:"insights",l:"💡 Insights"},{id:"deep",l:"🔬 Deep Dive"},{id:"trend",l:"📉 Trend"},{id:"subs",l:"📱 Subs"},{id:"heatmap",l:"📅 Heatmap"},{id:"search",l:"🔍 Search"}]},
+  {label:"Insights", tabs:[{id:"insights",l:"💡 Insights"},{id:"deep",l:"🔬 Deep Dive"},{id:"trend",l:"📉 Trend"},{id:"subs",l:"📱 Subs"},{id:"heatmap",l:"📅 Heatmap"},{id:"search",l:"🔍 Search"},{id:"aichat",l:"🤖 AI Chat"}]},
   {label:"Planning", tabs:[{id:"goals",l:"🎯 Goals"},{id:"tax",l:"💸 Tax"},{id:"compare",l:"⚖️ Compare"},{id:"growth",l:"🌱 Growth"}]},
   {label:"System",   tabs:[{id:"settings",l:"⚙️ Settings"}]},
 ];
@@ -1106,6 +1107,186 @@ function DashboardInner() {
   const [showImportRules, setShowImportRules] = useState(false);
   const [importRulesText, setImportRulesText] = useState('');
   const [importRulesStatus, setImportRulesStatus] = useState(null); // {ok:bool, msg:string}
+  const [hoverDay, setHoverDay] = useState(null); // heatmap hover state
+
+  // ── AI Insights config ──
+  const AI_PROVIDERS = {
+    anthropic: { label: 'Anthropic', sub: 'Claude', accent: '#d4a27f', placeholder: 'sk-ant-…', models: [{ id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' }, { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' }] },
+    openai:    { label: 'OpenAI',    sub: 'ChatGPT', accent: '#10a37f', placeholder: 'sk-…',    models: [{ id: 'gpt-4o', label: 'GPT-4o' }, { id: 'gpt-4o-mini', label: 'GPT-4o mini' }] },
+    google:    { label: 'Google',    sub: 'Gemini',  accent: '#4285f4', placeholder: 'AI…',     models: [{ id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' }, { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' }] },
+  };
+  const [aiConfig, setAiConfig] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('comma_ai_config') || '{}'); } catch { return {}; }
+  });
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [aiTestStatus, setAiTestStatus] = useState(null); // {ok:bool, msg:string} | null
+  const [aiTesting, setAiTesting] = useState(false);
+
+  const aiProvider = aiConfig.provider || 'anthropic';
+  const aiModel    = aiConfig.model || AI_PROVIDERS[aiProvider].models[0].id;
+  const aiKey      = aiConfig.apiKey || '';
+
+  function saveAiConfig(patch) {
+    setAiConfig(prev => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem('comma_ai_config', JSON.stringify(next));
+      return next;
+    });
+    setAiTestStatus(null);
+  }
+
+  // ── AI Chat state ──
+  const [chatMessages, setChatMessages] = useState([]); // [{role:'user'|'assistant', text:string}]
+  const [chatInput, setChatInput] = useState('');
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const [chatSuggestions, setChatSuggestions] = useState([]);
+  const chatBottomRef = useRef(null);
+  const chatInputRef = useRef(null);
+  const chatQueueRef = useRef([]);
+
+  // Follow-up suggestion rules — keyword match on last assistant response
+  const CHAT_FOLLOWUP_RULES = [
+    { keywords: ['uncat'], suggestions: ['Help me categorise them', 'Which uncategorised transactions are largest?'] },
+    { keywords: ['saving', 'savings rate', 'save more', 'surplus'], suggestions: ["What's my projected savings in 6 months?", 'How do I reach my savings goal faster?', 'Where can I cut spending to save more?'] },
+    { keywords: ['spend', 'spending', 'expense', 'cost', 'paid'], suggestions: ['Show me a breakdown by category', 'Compare to last month', 'What are my biggest discretionary expenses?'] },
+    { keywords: ['grocery', 'groceries', 'supermarket', 'coles', 'woolworths'], suggestions: ['How does my grocery spend compare to average?', 'Show me my grocery trend over time'] },
+    { keywords: ['dining', 'restaurant', 'takeaway', 'food', 'eating out', 'coffee'], suggestions: ['How much do I spend on dining per month?', 'Compare dining vs groceries'] },
+    { keywords: ['subscription', 'streaming', 'netflix', 'spotify', 'recurring'], suggestions: ['List all my subscriptions', 'Which subscriptions can I cancel?'] },
+    { keywords: ['mortgage', 'loan', 'debt', 'interest', 'property'], suggestions: ['How much interest am I paying?', 'What is my loan-to-value ratio?'] },
+    { keywords: ['income', 'salary', 'earn', 'pay'], suggestions: ['How does my income vary month to month?', 'What is my effective hourly rate?'] },
+    { keywords: ['invest', 'shares', 'portfolio', 'stock', 'super'], suggestions: ['What is my total net worth?', 'How are my investments performing?'] },
+  ];
+
+  // Category keyword → tab navigation
+  const CHAT_CATEGORY_LINKS = [
+    { pattern: /\b(grocer(?:y|ies)|supermarket|coles|woolworths)\b/gi, tab: 'variable', label: null },
+    { pattern: /\b(dining|restaurant(?:s)?|takeaway|eating out)\b/gi, tab: 'variable', label: null },
+    { pattern: /\b(variable spending|discretionary spending)\b/gi, tab: 'variable', label: null },
+    { pattern: /\b(health|medical|pharmacy|GP|physio|dental)\b/gi, tab: 'health', label: null },
+    { pattern: /\b(subscription(?:s)?|streaming|netflix|spotify)\b/gi, tab: 'subs', label: null },
+    { pattern: /\b(PayPal)\b/gi, tab: 'paypal', label: null },
+    { pattern: /\b(spending pattern(?:s)?|category breakdown|categories)\b/gi, tab: 'insights', label: null },
+    { pattern: /\b(trend(?:s)?|month[- ]by[- ]month|monthly trend)\b/gi, tab: 'trend', label: null },
+  ];
+
+  function getFollowUpSuggestions(text) {
+    const lower = text.toLowerCase();
+    for (const rule of CHAT_FOLLOWUP_RULES) {
+      if (rule.keywords.some(k => lower.includes(k))) {
+        return rule.suggestions.slice(0, 3);
+      }
+    }
+    return [];
+  }
+  useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+  // Expose tab navigation for inline category link buttons rendered via dangerouslySetInnerHTML
+  useEffect(() => { window.__chatNav = (t) => setTab(t); return () => { delete window.__chatNav; }; }, []);
+  // Drain message queue when streaming finishes
+  useEffect(() => {
+    if (!chatStreaming && chatQueueRef.current.length > 0) {
+      const next = chatQueueRef.current.shift();
+      sendChatMessage(next); // eslint-disable-line react-hooks/exhaustive-deps
+    }
+  }, [chatStreaming]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function testAiConnection() {
+    if (!aiKey) return;
+    setAiTesting(true);
+    setAiTestStatus(null);
+    try {
+      let ok = false, label = '';
+      if (aiProvider === 'anthropic') {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': aiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
+          body: JSON.stringify({ model: aiModel, max_tokens: 10, messages: [{ role: 'user', content: 'Reply with OK' }] }),
+        });
+        const j = await res.json();
+        ok = res.ok && j?.content?.[0]?.text;
+        label = ok ? `Connected to ${AI_PROVIDERS.anthropic.models.find(m => m.id === aiModel)?.label || aiModel}` : (j?.error?.message || 'Invalid API key');
+      } else if (aiProvider === 'openai') {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: aiModel, max_tokens: 5, messages: [{ role: 'user', content: 'Reply with OK' }] }),
+        });
+        const j = await res.json();
+        ok = res.ok && j?.choices?.[0]?.message?.content;
+        label = ok ? `Connected to ${AI_PROVIDERS.openai.models.find(m => m.id === aiModel)?.label || aiModel}` : (j?.error?.message || 'Invalid API key');
+      } else if (aiProvider === 'google') {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${aiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: 'Reply with OK' }] }] }),
+        });
+        const j = await res.json();
+        ok = res.ok && j?.candidates?.[0]?.content?.parts?.[0]?.text;
+        label = ok ? `Connected to ${AI_PROVIDERS.google.models.find(m => m.id === aiModel)?.label || aiModel}` : (j?.error?.message || 'Invalid API key');
+      }
+      setAiTestStatus({ ok, msg: ok ? `✓ ${label}` : `✗ ${label}` });
+    } catch (e) {
+      setAiTestStatus({ ok: false, msg: `✗ ${e.message}` });
+    } finally {
+      setAiTesting(false);
+    }
+  }
+
+  async function sendChatMessage(inputText) {
+    const text = (inputText !== undefined ? inputText : chatInput).trim();
+    if (!text || !aiKey) return;
+
+    // Queue if already streaming
+    if (chatStreaming) {
+      chatQueueRef.current.push(text);
+      if (inputText === undefined) setChatInput('');
+      return;
+    }
+
+    // Always include financial context prepended to the first message in history
+    const contextPrefix = buildFinancialContext({ pnl, hcats, goals, netWorth: NW_NOW, uncatCount, isLiveData, bankTxCount });
+
+    const newMessages = [...chatMessages, { role: 'user', text }];
+    setChatMessages(newMessages);
+    if (inputText === undefined) setChatInput('');
+    setChatStreaming(true);
+    setChatSuggestions([]);
+
+    const apiMessages = newMessages.map((m, i) => ({
+      role: m.role,
+      content: i === 0 ? contextPrefix + m.text : m.text,
+    }));
+
+    let assistantText = '';
+
+    await streamChat(
+      aiProvider, aiKey, aiModel, apiMessages,
+      (chunk) => {
+        assistantText += chunk;
+        setChatMessages([...newMessages, { role: 'assistant', text: assistantText }]);
+      },
+      () => {
+        if (!assistantText) setChatMessages([...newMessages, { role: 'assistant', text: '(No response)' }]);
+        setChatStreaming(false);
+        setChatSuggestions(assistantText ? getFollowUpSuggestions(assistantText) : []);
+      },
+      (err) => {
+        const msg = err.message || '';
+        let errorText, action;
+        if (/429|rate.?limit/i.test(msg)) {
+          errorText = `Rate limited by ${AI_PROVIDERS[aiProvider]?.label || aiProvider}. Wait a moment and try again.`;
+        } else if (/401|403|unauthorized|invalid.*key|api.?key/i.test(msg)) {
+          errorText = 'API key invalid or expired. Update it in Settings.';
+          action = { label: 'Go to Settings', tab: 'settings' };
+        } else {
+          errorText = `Error: ${msg}. Check your API key in Settings.`;
+          action = { label: 'Go to Settings', tab: 'settings' };
+        }
+        setChatMessages([...newMessages, { role: 'assistant', text: errorText, isError: true, action }]);
+        setChatStreaming(false);
+        chatQueueRef.current = [];
+      },
+    );
+  }
 
   // Re-apply user rules to all bank/upbank files whenever rules change.
   // Always apply to originalRawTxs (pre-rule data) so deleting a rule correctly reverts categories.
@@ -1154,6 +1335,21 @@ function DashboardInner() {
     }));
     setMappingFileId(null);
   };
+
+  // ─── LIVE DATA FROM UPLOADS ──────────────────────────────────────────────
+  const upData = useMemo(() =>
+    uploadedFiles.filter(f => f.type === 'bank' || f.type === 'upbank').at(-1)?.parsedData ?? null,
+    [uploadedFiles]
+  );
+  const ppData = useMemo(() =>
+    uploadedFiles.filter(f => f.type === 'paypal').at(-1)?.parsedData ?? null,
+    [uploadedFiles]
+  );
+  const csData = useMemo(() =>
+    uploadedFiles.filter(f => f.type === 'commsec').at(-1)?.parsedData ?? null,
+    [uploadedFiles]
+  );
+  const gwData = null; // mortgage tab: demo data only
 
   // Seed Planner salary slider with live avg income when data first loads
   const salarySeeded = useRef(false);
@@ -1295,21 +1491,6 @@ function DashboardInner() {
     ].sort((a, b) => b.benefit - a.benefit);
     return { strategies };
   }, [extraCash, sharesValue]);
-
-  // ─── LIVE DATA FROM UPLOADS ──────────────────────────────────────────────
-  const upData = useMemo(() =>
-    uploadedFiles.filter(f => f.type === 'bank' || f.type === 'upbank').at(-1)?.parsedData ?? null,
-    [uploadedFiles]
-  );
-  const ppData = useMemo(() =>
-    uploadedFiles.filter(f => f.type === 'paypal').at(-1)?.parsedData ?? null,
-    [uploadedFiles]
-  );
-  const csData = useMemo(() =>
-    uploadedFiles.filter(f => f.type === 'commsec').at(-1)?.parsedData ?? null,
-    [uploadedFiles]
-  );
-  const gwData = null; // mortgage tab: demo data only
 
   // ─── DERIVED LIVE DATA ───────────────────────────────────────────────────
   const pnl     = upData?.pnl     ?? pnlHC;
@@ -2662,8 +2843,6 @@ function DashboardInner() {
           const daysWithSpend = allAmounts.length;
           const maxDay = Object.entries(dailyTotals).sort((a,b)=>b[1]-a[1])[0];
 
-          const [hoverDay, setHoverDay] = useState(null);
-
           return (<>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
               <St label="Total period spend" value={"$" + Math.round(totalSpend).toLocaleString()} accent="#f87171" />
@@ -2896,6 +3075,158 @@ function DashboardInner() {
         );
       })()}
 
+      {/* ═══ AI CHAT ═══ */}
+      {tab === "aichat" && (<div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)', minHeight: 400 }}>
+        {!aiKey ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 32, textAlign: 'center' }}>
+            <div style={{ fontSize: 40 }}>🤖</div>
+            <div style={{ fontSize: 15, color: '#94a3b8', fontWeight: 600 }}>No AI provider connected</div>
+            <div style={{ fontSize: 12, color: '#475569', maxWidth: 280, lineHeight: 1.7 }}>Connect an AI provider in Settings to get personalised financial insights.</div>
+            <button onClick={() => setTab('settings')} style={{ marginTop: 8, padding: '9px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', color: '#818cf8', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Go to Settings</button>
+          </div>
+        ) : (<>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0, flexWrap: 'wrap', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: '#475569' }}>
+                {AI_PROVIDERS[aiProvider]?.label} · {AI_PROVIDERS[aiProvider]?.models.find(m => m.id === aiModel)?.label || aiModel}
+                {isLiveData && <span style={{ marginLeft: 8, color: '#34d399' }}>● live data</span>}
+              </div>
+              {/* Quick action pills */}
+              {[
+                { label: '📊 Summarise my month', prompt: 'Give me a concise monthly summary of my finances. Include: total income, total spending, savings rate, top 3 spending categories, and one thing I should consider changing.' },
+                { label: '🏠 Cost of living check', prompt: 'Compare my spending to typical Australian benchmarks. Am I above or below average on groceries, dining, transport, and utilities? Use ABS data as a rough guide.' },
+              ].map(({ label, prompt }) => (
+                <button key={label} onClick={() => sendChatMessage(prompt)} disabled={chatStreaming}
+                  style={{ padding: '3px 10px', borderRadius: 20, background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', color: '#818cf8', fontSize: 10, cursor: chatStreaming ? 'default' : 'pointer', opacity: chatStreaming ? 0.5 : 1, fontWeight: 500, whiteSpace: 'nowrap' }}
+                  onMouseEnter={e => { if (!chatStreaming) e.currentTarget.style.background = 'rgba(99,102,241,0.16)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.08)'; }}
+                >{label}</button>
+              ))}
+            </div>
+            {chatMessages.length > 0 && (
+              <button onClick={() => { setChatMessages([]); setChatSuggestions([]); }} style={{ padding: '4px 10px', borderRadius: 7, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', color: '#475569', fontSize: 10, cursor: 'pointer' }}>Clear conversation</button>
+            )}
+          </div>
+          {/* Message area */}
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, paddingRight: 2 }}>
+            {chatMessages.length === 0 && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>💬</div>
+                <div style={{ fontSize: 12, color: '#64748b', textAlign: 'center', maxWidth: 260, lineHeight: 1.7, opacity: 0.7 }}>Ask anything about your finances — spending patterns, saving tips, mortgage analysis, budget advice.</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%', maxWidth: 320 }}>
+                  {[
+                    'What did I spend the most on last month?',
+                    'How can I improve my savings rate?',
+                    'Are there any spending patterns I should worry about?',
+                  ].map(prompt => (
+                    <button key={prompt} onClick={() => sendChatMessage(prompt)} style={{ padding: '9px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8', fontSize: 12, cursor: 'pointer', textAlign: 'left', lineHeight: 1.4, transition: 'background 0.15s' }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+                    >{prompt}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {chatMessages.map((msg, i) => {
+              const isLastAssistant = msg.role === 'assistant' && i === chatMessages.length - 1 && !chatStreaming;
+              return (
+                <div key={i}>
+                  <div style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{
+                      maxWidth: '85%', padding: '9px 13px', borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                      background: msg.role === 'user' ? 'rgba(99,102,241,0.18)' : msg.isError ? 'rgba(248,113,113,0.07)' : 'rgba(255,255,255,0.055)',
+                      border: msg.role === 'user' ? '1px solid rgba(99,102,241,0.25)' : msg.isError ? '1px solid rgba(248,113,113,0.18)' : '1px solid rgba(255,255,255,0.07)',
+                      fontSize: 12, color: msg.isError ? '#fca5a5' : '#e2e8f0', lineHeight: 1.75,
+                    }}>
+                      {msg.role === 'assistant' ? (<>
+                        {(() => {
+                          // Simple markdown: bold, bullet lists, numbered lists
+                          const parts = msg.text.split('\n');
+                          return parts.map((line, li) => {
+                            const isBullet = /^[-*•]\s/.test(line);
+                            const isNum = /^\d+\.\s/.test(line);
+                            // Apply markdown formatting
+                            let formatted = line
+                              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                              .replace(/`(.+?)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>');
+                            // Apply category links — replace matched terms with inline buttons
+                            CHAT_CATEGORY_LINKS.forEach(({ pattern, tab: targetTab }) => {
+                              formatted = formatted.replace(pattern, (match) =>
+                                `<button onclick="window.__chatNav('${targetTab}')" style="background:rgba(99,102,241,0.12);border:1px solid rgba(99,102,241,0.25);color:#a5b4fc;border-radius:4px;padding:0 5px;font-size:11px;cursor:pointer;font-family:inherit;line-height:1.6">${match}</button>`
+                              );
+                            });
+                            return (
+                              <div key={li} style={{ marginLeft: (isBullet || isNum) ? 8 : 0, paddingLeft: (isBullet || isNum) ? 8 : 0, borderLeft: (isBullet || isNum) ? '2px solid rgba(255,255,255,0.1)' : 'none', marginBottom: line === '' ? 6 : 2 }}
+                                dangerouslySetInnerHTML={{ __html: formatted || '&nbsp;' }}
+                              />
+                            );
+                          });
+                        })()}
+                        {msg.action && <button onClick={() => setTab(msg.action.tab)} style={{ marginTop: 8, padding: '5px 10px', borderRadius: 7, background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.25)', color: '#fca5a5', fontSize: 11, cursor: 'pointer', display: 'block' }}>{msg.action.label}</button>}
+                      </>) : msg.text}
+                    </div>
+                  </div>
+                  {/* Follow-up suggestions after last assistant message */}
+                  {isLastAssistant && chatSuggestions.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, paddingLeft: 4 }}>
+                      {chatSuggestions.map(s => (
+                        <button key={s} onClick={() => { setChatSuggestions([]); sendChatMessage(s); }}
+                          style={{ padding: '4px 10px', borderRadius: 20, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', fontSize: 11, cursor: 'pointer', transition: 'background 0.15s' }}
+                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.09)'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+                        >{s}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {chatStreaming && chatMessages[chatMessages.length - 1]?.role !== 'assistant' && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                <div style={{ padding: '10px 14px', borderRadius: '14px 14px 14px 4px', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                  <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                    {[0,1,2].map(j => <span key={j} style={{ width: 5, height: 5, borderRadius: '50%', background: '#64748b', animation: 'chatDot 1.2s infinite', animationDelay: `${j * 0.2}s`, display: 'inline-block' }} />)}
+                  </span>
+                </div>
+              </div>
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+          {/* Input area */}
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'flex-end', flexShrink: 0 }}>
+            <textarea
+              ref={chatInputRef}
+              value={chatInput}
+              onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
+              disabled={chatStreaming}
+              placeholder="Ask about your finances…"
+              rows={1}
+              style={{
+                flex: 1, resize: 'none', maxHeight: 80, overflowY: 'auto',
+                padding: '10px 13px', borderRadius: 12,
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                color: '#e2e8f0', fontSize: 12, lineHeight: 1.5,
+                outline: 'none', fontFamily: 'inherit',
+                opacity: chatStreaming ? 0.5 : 1,
+              }}
+            />
+            <button
+              onClick={sendChatMessage}
+              disabled={chatStreaming || !chatInput.trim()}
+              style={{
+                padding: '10px 14px', borderRadius: 12, flexShrink: 0,
+                background: chatStreaming || !chatInput.trim() ? 'rgba(99,102,241,0.08)' : 'rgba(99,102,241,0.25)',
+                border: '1px solid rgba(99,102,241,0.3)', color: chatStreaming || !chatInput.trim() ? '#475569' : '#818cf8',
+                fontSize: 16, cursor: chatStreaming || !chatInput.trim() ? 'default' : 'pointer', lineHeight: 1,
+              }}
+            >↑</button>
+          </div>
+          <style>{`@keyframes chatDot { 0%,80%,100%{opacity:0.2} 40%{opacity:1} }`}</style>
+        </>)}
+      </div>)}
+
       {/* ═══ SETTINGS ═══ */}
       {tab === "settings" && (<div>
 
@@ -3097,6 +3428,82 @@ function DashboardInner() {
               {importRulesStatus.msg}
             </div>
           )}
+        </div>
+
+        {/* ── AI Insights ── */}
+        <div style={{ marginTop: 32 }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>AI Insights</div>
+            <div style={{ fontSize: 11, color: '#475569', lineHeight: 1.6 }}>Connect your own AI to get personalised financial insights. Your data goes direct from your browser to your AI provider — Comma is never in the loop.</div>
+          </div>
+
+          {/* Provider selector */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {Object.entries(AI_PROVIDERS).map(([key, prov]) => {
+              const active = aiProvider === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => saveAiConfig({ provider: key, model: prov.models[0].id })}
+                  style={{ flex: 1, padding: '12px 8px', borderRadius: 10, border: `1.5px solid ${active ? prov.accent : 'rgba(255,255,255,0.07)'}`, background: active ? `${prov.accent}18` : 'rgba(255,255,255,0.02)', cursor: 'pointer', textAlign: 'center', transition: 'all 0.15s', fontFamily: 'inherit' }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 4 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', border: `2px solid ${active ? prov.accent : '#475569'}`, background: active ? prov.accent : 'transparent', flexShrink: 0, transition: 'all 0.15s' }} />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: active ? prov.accent : '#94a3b8' }}>{prov.label}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: active ? `${prov.accent}cc` : '#475569' }}>{prov.sub}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* API key input */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6, fontWeight: 600 }}>API Key</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ position: 'relative', flex: 1 }}>
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={aiKey}
+                  onChange={e => saveAiConfig({ apiKey: e.target.value })}
+                  placeholder={AI_PROVIDERS[aiProvider].placeholder}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '9px 36px 9px 12px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)', color: '#cbd5e1', fontSize: 12, fontFamily: 'monospace', outline: 'none' }}
+                />
+                <button
+                  onClick={() => setShowApiKey(v => !v)}
+                  style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 13, padding: 2, lineHeight: 1 }}
+                  title={showApiKey ? 'Hide key' : 'Show key'}
+                >{showApiKey ? '🙈' : '👁'}</button>
+              </div>
+              <button
+                onClick={testAiConnection}
+                disabled={!aiKey || aiTesting}
+                style={{ padding: '9px 14px', borderRadius: 9, border: `1px solid ${AI_PROVIDERS[aiProvider].accent}44`, background: `${AI_PROVIDERS[aiProvider].accent}12`, color: !aiKey ? '#475569' : AI_PROVIDERS[aiProvider].accent, fontSize: 12, fontWeight: 600, cursor: !aiKey || aiTesting ? 'default' : 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', opacity: !aiKey ? 0.5 : 1 }}
+              >{aiTesting ? 'Testing…' : 'Test'}</button>
+            </div>
+            {aiTestStatus && (
+              <div style={{ marginTop: 6, fontSize: 11, color: aiTestStatus.ok ? '#34d399' : '#f87171' }}>{aiTestStatus.msg}</div>
+            )}
+          </div>
+
+          {/* Model selector */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6, fontWeight: 600 }}>Model</div>
+            <select
+              value={aiModel}
+              onChange={e => saveAiConfig({ model: e.target.value })}
+              style={{ width: '100%', padding: '9px 12px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.25)', color: '#cbd5e1', fontSize: 12, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
+            >
+              {AI_PROVIDERS[aiProvider].models.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Privacy note */}
+          <div style={{ padding: '10px 14px', borderRadius: 9, background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.05)', fontSize: 11, color: '#475569', lineHeight: 1.7 }}>
+            Your API key is stored in your browser only. When you ask a question, your financial data and question go directly from your browser to {AI_PROVIDERS[aiProvider].label}. Comma never sees the request, the response, or your key.
+          </div>
         </div>
 
       </div>)}
