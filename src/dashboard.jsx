@@ -1896,16 +1896,21 @@ function DashboardInner() {
     try {
       const { user, error } = await supaSignUp(email, password);
       if (error || !user) { setAuthError(error?.message || 'Sign up failed.'); return; }
+      // Sign in immediately after signup to establish a valid JWT session
+      const { user: signedInUser, error: signInError } = await supaSignIn(email, password);
+      if (signInError || !signedInUser) { setAuthError(signInError?.message || 'Sign up succeeded but sign in failed.'); return; }
+      // Small delay to ensure the session propagates before DB writes
+      await new Promise(resolve => setTimeout(resolve, 500));
       const salt = generateSalt();
-      await createVault(user.id, saltToBase64(salt));
+      await createVault(signedInUser.id, saltToBase64(salt));
       // Derive and cache the key before uploading
       _encSalt = salt;
       _encKey  = await deriveKey(password, salt);
       sessionPasswordRef.current = password;
-      await encryptAndUploadAll(user.id, password, salt);
-      authUserRef.current = user;
-      setAuthUser(user);
-      setUserTier(await getUserTier(user.id));
+      await encryptAndUploadAll(signedInUser.id, password, salt);
+      authUserRef.current = signedInUser;
+      setAuthUser(signedInUser);
+      setUserTier(await getUserTier(signedInUser.id));
       setAuthView('none');
       setLastSynced(new Date().toISOString());
       setAuthSuccess('Account created. Your data is now encrypted and synced.');
@@ -2001,7 +2006,6 @@ function DashboardInner() {
     setUserTier('free');
     setAuthView('none');
     setAuthError(''); setAuthSuccess('');
-    setShowWelcome(true);
   };
 
   const handleSyncNow = async () => {

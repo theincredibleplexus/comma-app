@@ -1087,7 +1087,9 @@ export function processCSVText(text) {
   if (format.bank === 'upbank')  return { type: 'upbank',  data: processUpBank(rows),  format };
 
   if (format.confidence !== 'manual') {
-    return { type: 'bank', data: processUniversalBank(rows, format), format };
+    const data = processUniversalBank(rows, format);
+    if (data) return { type: 'bank', data, format };
+    // Auto-detect produced no usable rows — fall through to manual mapping
   }
 
   return { type: 'manual', rows, format };

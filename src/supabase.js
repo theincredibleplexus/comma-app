@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 
+console.log('SUPABASE DEBUG:', import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY?.substring(0, 20))
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
@@ -98,7 +99,7 @@ export async function getUserTier(userId) {
     .from('user_tier')
     .select('tier')
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
   if (error || !data) return 'free'
   return data.tier
 }
